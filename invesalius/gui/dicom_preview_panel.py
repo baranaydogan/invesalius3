@@ -29,13 +29,14 @@ import vtk
 
 from vtk.util import  numpy_support
 from vtk.wx.wxVTKRenderWindowInteractor import wxVTKRenderWindowInteractor
-from wx.lib.pubsub import pub as Publisher
+from pubsub import pub as Publisher
 
 import invesalius.constants as const
 import invesalius.reader.dicom_reader as dicom_reader
 import invesalius.data.vtk_utils as vtku
 import invesalius.utils as utils
-import vtkgdcm
+from invesalius.data import imagedata_utils
+from invesalius.data import converters
 
 if sys.platform == 'win32':
     try:
@@ -788,8 +789,8 @@ class SingleImagePreview(wx.Panel):
         in_sizer.Add(checkbox, 0)
 
         sizer = wx.BoxSizer(wx.VERTICAL)
-        sizer.Add(self.panel, 20, wx.GROW|wx.EXPAND)
-        sizer.Add(in_sizer, 1, wx.GROW|wx.EXPAND)
+        sizer.Add(self.panel, 1, wx.GROW|wx.EXPAND)
+        sizer.Add(in_sizer, 0, wx.GROW|wx.EXPAND)
         sizer.Fit(self)
 
         self.SetSizer(sizer)
@@ -890,20 +891,20 @@ class SingleImagePreview(wx.Panel):
             reader.Update()
 
             image = reader.GetOutput()
-
         else:
-            rdicom = vtkgdcm.vtkGDCMImageReader()
+            filename = dicom.image.file
             if _has_win32api:
-                rdicom.SetFileName(win32api.GetShortPathName(dicom.image.file).encode(const.FS_ENCODE))
-            else:
-                rdicom.SetFileName(dicom.image.file)
-            rdicom.Update()
+                filename = win32api.GetShortPathName(filename).encode(const.FS_ENCODE)
+
+            np_image = imagedata_utils.read_dcm_slice_as_np2(filename)
+            print(">>> spacing", dicom.image.spacing)
+            vtk_image = converters.to_vtk(np_image, dicom.image.spacing, 0, 'AXIAL')
 
             # ADJUST CONTRAST
             window_level = dicom.image.level
             window_width = dicom.image.window
             colorer = vtk.vtkImageMapToWindowLevelColors()
-            colorer.SetInputConnection(rdicom.GetOutputPort())
+            colorer.SetInputData(vtk_image)
             colorer.SetWindow(float(window_width))
             colorer.SetLevel(float(window_level))
             colorer.Update()

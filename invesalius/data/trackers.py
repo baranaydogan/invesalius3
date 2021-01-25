@@ -62,6 +62,7 @@ def DefaultTracker(tracker_id):
     # return tracker initialization variable and type of connection
     return trck_init, 'wrapper'
 
+
 def PolarisTracker(tracker_id):
     from wx import ID_OK
     trck_init = None
@@ -91,6 +92,7 @@ def PolarisTracker(tracker_id):
     # return tracker initialization variable and type of connection
     return trck_init, lib_mode
 
+
 def CameraTracker(tracker_id):
     trck_init = None
     try:
@@ -104,6 +106,7 @@ def CameraTracker(tracker_id):
 
     # return tracker initialization variable and type of connection
     return trck_init, 'wrapper'
+
 
 def ClaronTracker(tracker_id):
     import invesalius.constants as const
@@ -152,7 +155,7 @@ def PolhemusTracker(tracker_id):
     except:
         trck_init = None
         lib_mode = 'error'
-        print('Could not connect to Polhemus.')
+        print('Could not connect to Polhemus by any method.')
 
     return trck_init, lib_mode
 
@@ -182,10 +185,10 @@ def PlhWrapperConnection(tracker_id):
                 sleep(0.175)
         else:
             trck_init = None
-            print('Could not connect to Polhemus via wrapper without error.')
+            print('Could not connect to Polhemus via wrapper without error: Initialize is False.')
     except:
         trck_init = None
-        print('Could not connect to Polhemus via wrapper with error.')
+        print('Could not connect to Polhemus via wrapper without error: Import failed.')
 
     return trck_init
 

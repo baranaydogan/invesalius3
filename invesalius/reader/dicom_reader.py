@@ -24,9 +24,11 @@ import sys
 from multiprocessing import cpu_count
 
 import vtk
-import vtkgdcm
 import gdcm
-from wx.lib.pubsub import pub as Publisher
+# Not showing GDCM warning and debug messages
+gdcm.Trace_DebugOff()
+gdcm.Trace_WarningOff()
+from pubsub import pub as Publisher
 
 import invesalius.constants as const
 import invesalius.reader.dicom as dicom
@@ -48,6 +50,7 @@ if sys.platform == 'win32':
         _has_win32api = False
 else:
     _has_win32api = False
+
 
 def ReadDicomGroup(dir_):
 
@@ -79,15 +82,15 @@ def SelectLargerDicomGroup(patient_group):
 def SortFiles(filelist, dicom):
     # Sort slices
     # FIXME: Coronal Crash. necessary verify
-    if (dicom.image.orientation_label != "CORONAL"):
-        ##Organize reversed image
-        sorter = gdcm.IPPSorter()
-        sorter.SetComputeZSpacing(True)
-        sorter.SetZSpacingTolerance(1e-10)
-        sorter.Sort(filelist)
+    # if (dicom.image.orientation_label != "CORONAL"):
+    ##Organize reversed image
+    sorter = gdcm.IPPSorter()
+    sorter.SetComputeZSpacing(True)
+    sorter.SetZSpacingTolerance(1e-10)
+    sorter.Sort(filelist)
 
-        #Getting organized image
-        filelist = sorter.GetFilenames()
+    #Getting organized image
+    filelist = sorter.GetFilenames()
 
     return filelist
 
@@ -129,6 +132,8 @@ class LoadDicom:
 
             tag = gdcm.Tag(0x0008, 0x0005)
             ds = reader.GetFile().GetDataSet()
+            image_helper = gdcm.ImageHelper()
+            data_dict['spacing'] = image_helper.GetSpacingValue(reader.GetFile())
             if ds.FindDataElement(tag):
                 encoding_value = str(ds.GetDataElement(tag).GetValue()).split('\\')[0]
                 
@@ -202,14 +207,11 @@ class LoadDicom:
                 level = None
                 window = None
 
-            if _has_win32api:
-                thumbnail_path = imagedata_utils.create_dicom_thumbnails(win32api.GetShortPathName(self.filepath), window, level)
-            else:
-                thumbnail_path = imagedata_utils.create_dicom_thumbnails(self.filepath, window, level)
+            img = reader.GetImage()
+            thumbnail_path = imagedata_utils.create_dicom_thumbnails(img, window, level)
 
             #------ Verify the orientation --------------------------------
 
-            img = reader.GetImage()
             direc_cosines = img.GetDirectionCosines()
             orientation = gdcm.Orientation()
             try:

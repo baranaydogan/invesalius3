@@ -19,7 +19,6 @@
 #---------------------------------------------------------------------
 import time
 #import gdcm
-#import vtkgdcm
 import sys
 import invesalius.utils as utils
 import invesalius.constants as const
@@ -141,7 +140,7 @@ class Parser():
 
     def SetDataImage(self, data_image, filename, thumbnail_path):
         self.data_image = data_image
-        self.filename = self.filepath = filename    
+        self.filename = self.filepath = filename
         self.thumbnail_path = thumbnail_path
 
     def __format_time(self,value):
@@ -509,12 +508,15 @@ class Parser():
         DICOM standard tag (0x0028, 0x0030) was used.
         """
         try:
-            data = self.data_image[str(0x0028)][str(0x0030)].replace(",", ".")
-        except(KeyError):
+            return self.data_image["spacing"][:2]
+        except KeyError:
+            try:
+                data = self.data_image[str(0x0028)][str(0x0030)].replace(",", ".")
+            except(KeyError):
+                return ""
+            if (data):
+                return [float(value) for value in data.split('\\')]
             return ""
-        if (data):
-            return [eval(value) for value in data.split('\\')]
-        return ""
 
     def GetPatientWeight(self):
         """
@@ -1954,7 +1956,7 @@ class Image(object):
             self.position = [1, 1, 1]
 
         self.number = parser.GetImageNumber()
-        self.spacing = spacing = parser.GetPixelSpacing()
+        self.spacing = list(parser.GetPixelSpacing())
         self.orientation_label = parser.GetImageOrientationLabel()
         self.file = parser.filename
         self.time = parser.GetImageTime()
@@ -1967,12 +1969,6 @@ class Image(object):
         self.number_of_frames = parser.GetNumberOfFrames()
 
         if (parser.GetImageThickness()):
-            try:
-                spacing.append(parser.GetImageThickness())
-            except(AttributeError):
-                spacing = [1, 1, 1]
+            self.spacing.append(parser.GetImageThickness())
         else:
-            try:
-                spacing.append(1.5)
-            except(AttributeError):
-                spacing = [1, 1, 1]
+            self.spacing.append(1.0)

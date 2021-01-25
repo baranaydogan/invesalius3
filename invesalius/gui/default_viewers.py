@@ -21,7 +21,7 @@ import os
 
 import wx
 import wx.lib.agw.fourwaysplitter as fws
-from wx.lib.pubsub import pub as Publisher
+from pubsub import pub as Publisher
 
 import invesalius.data.viewer_slice as slice_viewer
 import invesalius.data.viewer_volume as volume_viewer
@@ -111,7 +111,7 @@ class Panel(wx.Panel):
         p3.SetPopupMenu(menu)
 
 
-        if sys.platform == 'win32':
+        if sys.platform == 'win32' or wx.VERSION >= (4, 1):
             self.aui_manager.AddPane(p1, s1)
             self.aui_manager.AddPane(p2, s2)
             self.aui_manager.AddPane(p3, s3)
@@ -316,7 +316,7 @@ class VolumeInteraction(wx.Panel):
 
 import wx.lib.platebtn as pbtn
 import wx.lib.buttons as btn
-import wx.lib.pubsub as ps
+from pubsub import pub as Publisher
 import wx.lib.colourselect as csel
 
 [BUTTON_RAYCASTING, BUTTON_VIEW, BUTTON_SLICE_PLANE, BUTTON_3D_STEREO, BUTTON_TARGET] = [wx.NewId() for num in range(5)]
@@ -604,7 +604,7 @@ class VolumeToolPanel(wx.Panel):
         id = evt.GetId()
         item = ID_TO_ITEMSLICEMENU[id]
         checked = item.IsChecked()
-        label = item.GetLabel()
+        label = item.GetItemLabelText()
 
         if not (checked):
             Publisher.sendMessage('Disable plane', plane_label=label)

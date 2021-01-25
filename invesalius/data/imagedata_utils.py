@@ -23,10 +23,11 @@ import sys
 import tempfile
 
 import gdcm
+import imageio
 import numpy
+import numpy as np
 import vtk
-import vtkgdcm
-from wx.lib.pubsub import pub as Publisher
+from pubsub import pub as Publisher
 
 from scipy.ndimage import shift, zoom
 from vtk.util import numpy_support
@@ -36,6 +37,8 @@ from invesalius.data import vtk_utils as vtk_utils
 import invesalius.reader.bitmap_reader as bitmap_reader
 import invesalius.utils as utils
 import invesalius.data.converters as converters
+import invesalius.data.slice_ as sl
+import invesalius.data.transformations as tr
 
 from invesalius import inv_paths
 
@@ -124,20 +127,25 @@ def resize_slice(im_array, resolution_percentage):
     return out
 
 
-def read_dcm_slice_as_np(filename, resolution_percentage=1.0):
-    """
-    read a dicom slice file and return the slice as numpy ndarray
-    """
-    dcm_reader = vtkgdcm.vtkGDCMImageReader()
-    dcm_reader.SetFileName(filename)
-    dcm_reader.Update()
-    image = dcm_reader.GetOutput()
+def resize_image_array(image, resolution_percentage, as_mmap=False):
+    out = zoom(image, resolution_percentage, image.dtype, order=2)
+    if as_mmap:
+        fname = tempfile.mktemp(suffix="_resized")
+        out_mmap = np.memmap(fname, shape=out.shape, dtype=out.dtype, mode='w+')
+        out_mmap[:] = out
+        return out_mmap
+    return out
+
+
+def read_dcm_slice_as_np2(filename, resolution_percentage=1.0):
+    reader = gdcm.ImageReader()
+    reader.SetFileName(filename)
+    reader.Read()
+    image = reader.GetImage()
+    output = converters.gdcm_to_numpy(image)
     if resolution_percentage < 1.0:
-        image = ResampleImage2D(image, resolution_percentage=resolution_percentage)
-    dx, dy, dz = image.GetDimensions()
-    im_array = numpy_support.vtk_to_numpy(image.GetPointData().GetScalars())
-    im_array.shape = dy, dx
-    return im_array
+        output = zoom(output, resolution_percentage)
+    return output
 
 
 def FixGantryTilt(matrix, spacing, tilt):
@@ -240,17 +248,6 @@ def View(imagedata):
     import time
     time.sleep(10)
 
-def ViewGDCM(imagedata):
-    viewer = vtkgdcm.vtkImageColorViewer()
-    viewer.SetInput(reader.GetOutput())
-    viewer.SetColorWindow(500.)
-    viewer.SetColorLevel(50.)
-    viewer.Render()
-
-    import time
-    time.sleep(5)
-
-
 
 def ExtractVOI(imagedata,xi,xf,yi,yf,zi,zf):
     """
@@ -265,267 +262,43 @@ def ExtractVOI(imagedata,xi,xf,yi,yf,zi,zf):
     return voi.GetOutput()
 
 
-def create_dicom_thumbnails(filename, window=None, level=None):
-    rvtk = vtkgdcm.vtkGDCMImageReader()
-    rvtk.SetFileName(utils.encode(filename, const.FS_ENCODE))
-    rvtk.Update()
-
-    img = rvtk.GetOutput()
+def create_dicom_thumbnails(image, window=None, level=None):
+    pf = image.GetPixelFormat()
+    np_image = converters.gdcm_to_numpy(image, pf.GetSamplesPerPixel() == 1)
     if window is None or level is None:
-        _min, _max = img.GetScalarRange()
+        _min, _max = np_image.min(), np_image.max()
         window = _max - _min
         level = _min + window / 2
 
-    dx, dy, dz = img.GetDimensions()
-
-    if dz > 1:
+    if image.GetNumberOfDimensions() >= 3:
         thumbnail_paths = []
-        for i in range(dz):
-            img_slice = ExtractVOI(img, 0, dx-1, 0, dy-1, i, i+1)
-
-            colorer = vtk.vtkImageMapToWindowLevelColors()
-            colorer.SetInputData(img_slice)
-            colorer.SetWindow(window)
-            colorer.SetLevel(level)
-            colorer.SetOutputFormatToRGB()
-            colorer.Update()
-
-            resample = vtk.vtkImageResample()
-            resample.SetInputData(colorer.GetOutput())
-            resample.SetAxisMagnificationFactor ( 0, 0.25 )
-            resample.SetAxisMagnificationFactor ( 1, 0.25 )
-            resample.SetAxisMagnificationFactor ( 2, 1 )
-            resample.Update()
-
-            thumbnail_path = tempfile.mktemp()
-
-            write_png = vtk.vtkPNGWriter()
-            write_png.SetInputData(resample.GetOutput())
-            write_png.SetFileName(thumbnail_path)
-            write_png.Write()
-
+        for i in range(np_image.shape[0]):
+            thumb_image = zoom(np_image[i], 0.25)
+            thumb_image = np.array(get_LUT_value_255(thumb_image, window, level), dtype=np.uint8)
+            thumbnail_path = tempfile.mktemp(prefix='thumb_', suffix='.png')
+            imageio.imsave(thumbnail_path, thumb_image)
             thumbnail_paths.append(thumbnail_path)
-
         return thumbnail_paths
     else:
-        colorer = vtk.vtkImageMapToWindowLevelColors()
-        colorer.SetInputData(img)
-        colorer.SetWindow(window)
-        colorer.SetLevel(level)
-        colorer.SetOutputFormatToRGB()
-        colorer.Update()
-
-        resample = vtk.vtkImageResample()
-        resample.SetInputData(colorer.GetOutput())
-        resample.SetAxisMagnificationFactor ( 0, 0.25 )
-        resample.SetAxisMagnificationFactor ( 1, 0.25 )
-        resample.SetAxisMagnificationFactor ( 2, 1 )
-        resample.Update()
-
-        thumbnail_path = tempfile.mktemp()
-
-        write_png = vtk.vtkPNGWriter()
-        write_png.SetInputData(resample.GetOutput())
-        write_png.SetFileName(thumbnail_path)
-        write_png.Write()
-
+        thumbnail_path = tempfile.mktemp(prefix='thumb_', suffix='.png')
+        if pf.GetSamplesPerPixel() == 1:
+            thumb_image = zoom(np_image, 0.25)
+            thumb_image = np.array(get_LUT_value_255(thumb_image, window, level), dtype=np.uint8)
+        else:
+            thumb_image = zoom(np_image, (0.25, 0.25, 1))
+        imageio.imsave(thumbnail_path, thumb_image)
         return thumbnail_path
 
 
-def CreateImageData(filelist, zspacing, xyspacing,size,
-                                bits, use_dcmspacing):
-    message = _("Generating multiplanar visualization...")
 
-    if not const.VTK_WARNING:
-        log_path = os.path.join(inv_paths.USER_LOG_DIR, 'vtkoutput.txt')
-        fow = vtk.vtkFileOutputWindow()
-        fow.SetFileName(log_path)
-        ow = vtk.vtkOutputWindow()
-        ow.SetInstance(fow)
+def array2memmap(arr, filename=None):
+    if filename is None:
+        filename = tempfile.mktemp(prefix='inv3_', suffix='.dat')
+    matrix = numpy.memmap(filename, mode='w+', dtype=arr.dtype, shape=arr.shape)
+    matrix[:] = arr[:]
+    matrix.flush()
+    return matrix
 
-    x,y = size
-    px, py = utils.predict_memory(len(filelist), x, y, bits)
-
-    utils.debug("Image Resized to >>> %f x %f" % (px, py))
-
-    if (x == px) and (y == py):
-        const.REDUCE_IMAGEDATA_QUALITY = 0
-    else:
-        const.REDUCE_IMAGEDATA_QUALITY = 1
-
-    if not(const.REDUCE_IMAGEDATA_QUALITY):
-        update_progress= vtk_utils.ShowProgress(1, dialog_type = "ProgressDialog")
-
-        array = vtk.vtkStringArray()
-        for x in range(len(filelist)):
-            array.InsertValue(x,filelist[x])
-
-        reader = vtkgdcm.vtkGDCMImageReader()
-        reader.SetFileNames(array)
-        reader.AddObserver("ProgressEvent", lambda obj,evt:
-                     update_progress(reader,message))
-        reader.Update()
-
-        # The zpacing is a DicomGroup property, so we need to set it
-        imagedata = vtk.vtkImageData()
-        imagedata.DeepCopy(reader.GetOutput())
-        if (use_dcmspacing):
-            spacing = xyspacing
-            spacing[2] = zspacing
-        else:
-            spacing = imagedata.GetSpacing()
-
-        imagedata.SetSpacing(spacing[0], spacing[1], zspacing)
-    else:
-
-        update_progress= vtk_utils.ShowProgress(2*len(filelist),
-                                            dialog_type = "ProgressDialog")
-
-        # Reformat each slice and future append them
-        appender = vtk.vtkImageAppend()
-        appender.SetAppendAxis(2) #Define Stack in Z
-
-
-        # Reformat each slice
-        for x in range(len(filelist)):
-            # TODO: We need to check this automatically according
-            # to each computer's architecture
-            # If the resolution of the matrix is too large
-            reader = vtkgdcm.vtkGDCMImageReader()
-            reader.SetFileName(filelist[x])
-            reader.AddObserver("ProgressEvent", lambda obj,evt:
-                         update_progress(reader,message))
-            reader.Update()
-
-            if (use_dcmspacing):
-                spacing = xyspacing
-                spacing[2] = zspacing
-            else:
-                spacing = reader.GetOutput().GetSpacing()
-
-            tmp_image = vtk.vtkImageData()
-            tmp_image.DeepCopy(reader.GetOutput())
-            tmp_image.SetSpacing(spacing[0], spacing[1], zspacing)
-            tmp_image.Update()
-
-            #Resample image in x,y dimension
-            slice_imagedata = ResampleImage2D(tmp_image, px, py, update_progress)
-            #Stack images in Z axes
-            appender.AddInput(slice_imagedata)
-            #appender.AddObserver("ProgressEvent", lambda obj,evt:update_progress(appender))
-            appender.Update()
-
-        spacing = appender.GetOutput().GetSpacing()
-
-        # The zpacing is a DicomGroup property, so we need to set it
-        imagedata = vtk.vtkImageData()
-        imagedata.DeepCopy(appender.GetOutput())
-        imagedata.SetSpacing(spacing[0], spacing[1], zspacing)
-
-    imagedata.AddObserver("ProgressEvent", lambda obj,evt:
-                 update_progress(imagedata,message))
-    imagedata.Update()
-
-    return imagedata
-
-
-class ImageCreator:
-    def __init__(self):
-        self.running = True
-        Publisher.subscribe(self.CancelImageDataLoad, "Cancel DICOM load")
-
-    def CancelImageDataLoad(self, evt_pusub):
-        utils.debug("Canceling")
-        self.running = False
-
-    def CreateImageData(self, filelist, zspacing, size, bits):
-        message = _("Generating multiplanar visualization...")
-
-        if not const.VTK_WARNING:
-            log_path = os.path.join(inv_paths.USER_LOG_DIR, 'vtkoutput.txt')
-            fow = vtk.vtkFileOutputWindow()
-            fow.SetFileName(log_path)
-            ow = vtk.vtkOutputWindow()
-            ow.SetInstance(fow)
-
-        x,y = size
-        px, py = utils.predict_memory(len(filelist), x, y, bits)
-        utils.debug("Image Resized to >>> %f x %f" % (px, py))
-
-        if (x == px) and (y == py):
-            const.REDUCE_IMAGEDATA_QUALITY = 0
-        else:
-            const.REDUCE_IMAGEDATA_QUALITY = 1
-
-        if not(const.REDUCE_IMAGEDATA_QUALITY):
-            update_progress= vtk_utils.ShowProgress(1, dialog_type = "ProgressDialog")
-
-            array = vtk.vtkStringArray()
-            for x in range(len(filelist)):
-                if not self.running:
-                    return False
-                array.InsertValue(x,filelist[x])
-
-            if not self.running:
-                return False
-            reader = vtkgdcm.vtkGDCMImageReader()
-            reader.SetFileNames(array)
-            reader.AddObserver("ProgressEvent", lambda obj,evt:
-                         update_progress(reader,message))
-            reader.Update()
-
-            if not self.running:
-                reader.AbortExecuteOn()
-                return False
-            # The zpacing is a DicomGroup property, so we need to set it
-            imagedata = vtk.vtkImageData()
-            imagedata.DeepCopy(reader.GetOutput())
-            spacing = imagedata.GetSpacing()
-            imagedata.SetSpacing(spacing[0], spacing[1], zspacing)
-        else:
-
-            update_progress= vtk_utils.ShowProgress(2*len(filelist),
-                                                dialog_type = "ProgressDialog")
-
-            # Reformat each slice and future append them
-            appender = vtk.vtkImageAppend()
-            appender.SetAppendAxis(2) #Define Stack in Z
-
-
-            # Reformat each slice
-            for x in range(len(filelist)):
-                # TODO: We need to check this automatically according
-                # to each computer's architecture
-                # If the resolution of the matrix is too large
-                if not self.running:
-                    return False
-                reader = vtkgdcm.vtkGDCMImageReader()
-                reader.SetFileName(filelist[x])
-                reader.AddObserver("ProgressEvent", lambda obj,evt:
-                             update_progress(reader,message))
-                reader.Update()
-
-                #Resample image in x,y dimension
-                slice_imagedata = ResampleImage2D(reader.GetOutput(), px, py, update_progress)
-                #Stack images in Z axes
-                appender.AddInput(slice_imagedata)
-                #appender.AddObserver("ProgressEvent", lambda obj,evt:update_progress(appender))
-                appender.Update()
-
-            # The zpacing is a DicomGroup property, so we need to set it
-            if not self.running:
-                return False
-            imagedata = vtk.vtkImageData()
-            imagedata.DeepCopy(appender.GetOutput())
-            spacing = imagedata.GetSpacing()
-
-            imagedata.SetSpacing(spacing[0], spacing[1], zspacing)
-
-        imagedata.AddObserver("ProgressEvent", lambda obj,evt:
-                     update_progress(imagedata,message))
-        imagedata.Update()
-
-        return imagedata
 
 def bitmap2memmap(files, slice_size, orientation, spacing, resolution_percentage):
     """
@@ -533,7 +306,8 @@ def bitmap2memmap(files, slice_size, orientation, spacing, resolution_percentage
     returns it and its related filename.
     """
     message = _("Generating multiplanar visualization...")
-    update_progress= vtk_utils.ShowProgress(len(files) - 1, dialog_type = "ProgressDialog")
+    if len(files) > 1:
+        update_progress= vtk_utils.ShowProgress(len(files) - 1, dialog_type = "ProgressDialog")
 
     temp_file = tempfile.mktemp()
 
@@ -617,14 +391,15 @@ def bitmap2memmap(files, slice_size, orientation, spacing, resolution_percentage
             array.shape = matrix.shape[1], matrix.shape[2]
             matrix[n] = array
         
-        update_progress(cont,message)
+        if len(files) > 1:
+            update_progress(cont,message)
         cont += 1
 
     matrix.flush()
     scalar_range = min_scalar, max_scalar
 
+    print("MATRIX", matrix.shape)
     return matrix, scalar_range, temp_file
-
 
 
 def dcm2memmap(files, slice_size, orientation, resolution_percentage):
@@ -632,10 +407,11 @@ def dcm2memmap(files, slice_size, orientation, resolution_percentage):
     From a list of dicom files it creates memmap file in the temp folder and
     returns it and its related filename.
     """
-    message = _("Generating multiplanar visualization...")
-    update_progress= vtk_utils.ShowProgress(len(files) - 1, dialog_type = "ProgressDialog")
+    if len(files) > 1:
+        message = _("Generating multiplanar visualization...")
+        update_progress= vtk_utils.ShowProgress(len(files) - 1, dialog_type = "ProgressDialog")
 
-    first_slice = read_dcm_slice_as_np(files[0], resolution_percentage)
+    first_slice = read_dcm_slice_as_np2(files[0], resolution_percentage)
     slice_size = first_slice.shape[::-1]
 
     temp_file = tempfile.mktemp()
@@ -649,7 +425,7 @@ def dcm2memmap(files, slice_size, orientation, resolution_percentage):
 
     matrix = numpy.memmap(temp_file, mode='w+', dtype='int16', shape=shape)
     for n, f in enumerate(files):
-        im_array = read_dcm_slice_as_np(f, resolution_percentage)
+        im_array = read_dcm_slice_as_np2(f, resolution_percentage)[::-1]
 
         if orientation == 'CORONAL':
             matrix[:, shape[1] - n - 1, :] = im_array
@@ -660,7 +436,8 @@ def dcm2memmap(files, slice_size, orientation, resolution_percentage):
             matrix[:, :, n] = im_array
         else:
             matrix[n] = im_array
-        update_progress(n, message)
+        if len(files) > 1:
+            update_progress(n, message)
 
     matrix.flush()
     scalar_range = matrix.min(), matrix.max()
@@ -669,37 +446,35 @@ def dcm2memmap(files, slice_size, orientation, resolution_percentage):
 
 
 def dcmmf2memmap(dcm_file, orientation):
-    r = vtkgdcm.vtkGDCMImageReader()
-    r.SetFileName(dcm_file)
-    r.Update()
-
+    reader = gdcm.ImageReader()
+    reader.SetFileName(dcm_file)
+    reader.Read()
+    image = reader.GetImage()
+    xs, ys, zs = image.GetSpacing()
+    pf = image.GetPixelFormat()
+    np_image = converters.gdcm_to_numpy(image, pf.GetSamplesPerPixel() == 1)
     temp_file = tempfile.mktemp()
-
-    o = r.GetOutput()
-    x, y, z = o.GetDimensions()
-    spacing = o.GetSpacing()
-
-    matrix = numpy.memmap(temp_file, mode='w+', dtype='int16', shape=(z, y, x))
-
-    d = numpy_support.vtk_to_numpy(o.GetPointData().GetScalars())
-    d.shape = z, y, x
+    matrix = numpy.memmap(temp_file, mode='w+', dtype='int16', shape=np_image.shape)
+    print("Number of dimensions", np_image.shape)
+    z, y, x = np_image.shape
     if orientation == 'CORONAL':
+        spacing = xs, zs, ys
         matrix.shape = y, z, x
         for n in range(z):
-            matrix[:, n, :] = d[n]
+            matrix[:, n, :] = np_image[n][::-1]
     elif orientation == 'SAGITTAL':
-        matrix.shape = x, z, y
+        spacing = zs, ys, xs
+        matrix.shape = y, x, z
         for n in range(z):
-            matrix[:, :, n] = d[n]
+            matrix[:, :, n] = np_image[n][::-1]
     else:
-        matrix[:] = d
+        spacing = xs, ys, zs
+        matrix[:] = np_image[:, ::-1, :]
 
     matrix.flush()
     scalar_range = matrix.min(), matrix.max()
 
-    print("ORIENTATION", orientation)
-
-    return matrix, spacing, scalar_range, temp_file
+    return matrix, scalar_range, spacing, temp_file
 
 
 def img2memmap(group):
@@ -712,13 +487,13 @@ def img2memmap(group):
 
     data = group.get_data()
     # Normalize image pixel values and convert to int16
-    data = imgnormalize(data)
+    #  data = imgnormalize(data)
 
     # Convert RAS+ to default InVesalius orientation ZYX
     data = numpy.swapaxes(data, 0, 2)
     data = numpy.fliplr(data)
 
-    matrix = numpy.memmap(temp_file, mode='w+', dtype=data.dtype, shape=data.shape)
+    matrix = numpy.memmap(temp_file, mode='w+', dtype=np.int16, shape=data.shape)
     matrix[:] = data[:]
     matrix.flush()
 
@@ -727,29 +502,83 @@ def img2memmap(group):
     return matrix, scalar_range, temp_file
 
 
-def imgnormalize(data, srange=(0, 255)):
+def get_LUT_value_255(data, window, level):
+    shape = data.shape
+    data_ = data.ravel()
+    data = np.piecewise(data_,
+                        [data_ <= (level - 0.5 - (window-1)/2),
+                         data_ > (level - 0.5 + (window-1)/2)],
+                        [0, 255, lambda data_: ((data_ - (level - 0.5))/(window-1) + 0.5)*(255)])
+    data.shape = shape
+    return data
+
+
+def image_normalize(image, min_=0.0, max_=1.0, output_dtype=np.int16):
+    output = np.empty(shape=image.shape, dtype=output_dtype)
+    imin, imax = image.min(), image.max()
+    output[:] = (image - imin) * ((max_ - min_) / (imax - imin)) + min_
+    return output
+
+
+def world2invspace(affine=None):
     """
     Normalize image pixel intensity for int16 gray scale values.
 
-    :param data: image matrix
-    :param srange: range for normalization, default is 0 to 255
-    :return: normalized pixel intensity matrix
+    :param repos: list of translation and rotation [trans_x, trans_y, trans_z, rot_x, rot_y, rot_z] to reposition the
+    vtk object prior to applying the affine matrix transformation. Note: rotation given in degrees
+    :param user_matrix: affine matrix from image header, prefered QForm matrix
+    :return: vtk transform filter for repositioning the polydata and affine matrix to be used as SetUserMatrix in actor
     """
 
-    dataf = numpy.asarray(data)
-    rangef = numpy.asarray(srange)
-    faux = numpy.ravel(dataf).astype(float)
-    minimum = numpy.min(faux)
-    maximum = numpy.max(faux)
-    lower = rangef[0]
-    upper = rangef[1]
+    # remove scaling factor for non-unitary voxel dimensions
+    scale, shear, angs, trans, persp = tr.decompose_matrix(affine)
+    affine_noscale = tr.compose_matrix(scale=None, shear=shear, angles=angs, translate=trans, perspective=persp)
+    # repos_img = [0.] * 6
+    # repos_img[1] = -float(shape[1])
+    #
+    # repos_mat = np.identity(4)
+    # # translation
+    # repos_mat[:3, -1] = repos_img[:3]
+    # # rotation (in principle for invesalius space no rotation is needed)
+    # repos_mat[:3, :3] = tr.euler_matrix(*np.deg2rad(repos_img[3:]), axes='sxyz')[:3, :3]
 
-    if minimum == maximum:
-        datan = numpy.ones(dataf.shape)*(upper + lower) / 2.
-    else:
-        datan = (faux-minimum)*(upper-lower) / (maximum-minimum) + lower
+    # if repos:
+    #     transx, transy, transz, rotx, roty, rotz = repos
+    #     # create a transform that rotates the stl source
+    #     transform = vtk.vtkTransform()
+    #     transform.PostMultiply()
+    #     transform.RotateX(rotx)
+    #     transform.RotateY(roty)
+    #     transform.RotateZ(rotz)
+    #     transform.Translate(transx, transy, transz)
+    #
+    #     transform_filt = vtk.vtkTransformPolyDataFilter()
+    #     transform_filt.SetTransform(transform)
+    #     transform_filt.Update()
 
-    datan = numpy.reshape(datan, dataf.shape)
-    datan = datan.astype(numpy.int16)
+    # assuming vtk default transformation order is PreMultiply, the user matrix is set so:
+    # 1. Replace the object -> 2. Transform the object to desired position/orientation
+    # PreMultiplty: M = M*A where M is current transformation and A is applied transformation
+    # user_matrix = np.linalg.inv(user_matrix) @ repos_mat
 
-    return datan
+    return np.linalg.inv(affine_noscale)
+
+
+def convert_world_to_voxel(xyz, affine):
+    """
+    Convert a coordinate from the world space ((x, y, z); scanner space; millimeters) to the
+    voxel space ((i, j, k)). This is achieved by multiplying a coordinate by the inverse
+    of the affine transformation.
+    More information: https://nipy.org/nibabel/coordinate_systems.html
+    :param xyz: a list or array of 3 coordinates (x, y, z) in the world coordinates
+    :param affine: a 4x4 array containing the image affine transformation in homogeneous coordinates
+    :return: a 1x3 array with the point coordinates in image space (i, j, k)
+    """
+
+    # print("xyz: ", xyz, "\naffine", affine)
+    # convert xyz coordinate to 1x4 homogeneous coordinates array
+    xyz_homo = np.hstack((xyz, 1.)).reshape([4, 1])
+    ijk_homo = np.linalg.inv(affine) @ xyz_homo
+    ijk = ijk_homo.T[np.newaxis, 0, :3]
+
+    return ijk

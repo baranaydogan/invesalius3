@@ -17,8 +17,6 @@
 #    detalhes.
 #--------------------------------------------------------------------------
 
-from six import with_metaclass
-
 try:
     import configparser as ConfigParser
 except(ImportError):
@@ -33,8 +31,7 @@ import codecs
 import collections
 import json
 
-#import wx.lib.pubsub as ps
-from wx.lib.pubsub import pub as Publisher
+from pubsub import pub as Publisher
 import wx
 
 from invesalius.utils import Singleton, debug, decode
@@ -52,7 +49,7 @@ SESSION_ENCODING = 'utf8'
 
 # Only one session will be initialized per time. Therefore, we use
 # Singleton design pattern for implementing it
-class Session(with_metaclass(Singleton, object)):
+class Session(metaclass=Singleton):
 
     def __init__(self):
         self.project_path = ()
@@ -88,11 +85,6 @@ class Session(with_metaclass(Singleton, object)):
 
     def CreateItens(self):
         import invesalius.constants as const
-        homedir = inv_paths.USER_DIR
-        tempdir = os.path.join(inv_paths.USER_DIR, u".invesalius", u"temp")
-        if not os.path.isdir(tempdir):
-            os.makedirs(tempdir)
-
         self._values = collections.defaultdict(dict, {
             'session': {
                 'mode': const.MODE_RP,
@@ -111,7 +103,7 @@ class Session(with_metaclass(Singleton, object)):
 
             'paths': {
                 'homedir': str(inv_paths.USER_DIR),
-                'tempdir': os.path.join(homedir, u".invesalius", u"temp"),
+                'tempdir': str(inv_paths.TEMP_DIR),
                 'last_dicom_folder': '',
             },
         })

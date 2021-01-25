@@ -1,12 +1,11 @@
 import wx
 import vtk
-import vtkgdcm
 import time
 import numpy
 
 from vtk.util import  numpy_support
 from vtk.wx.wxVTKRenderWindowInteractor import wxVTKRenderWindowInteractor
-from wx.lib.pubsub import pub as Publisher
+from pubsub import pub as Publisher
 
 import invesalius.constants as const
 import invesalius.data.vtk_utils as vtku
